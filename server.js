@@ -18,6 +18,14 @@ app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ limit: '2mb', extended: true }));
 app.use('/uploads', express.static('uploads'));
 
+// Ասում ենք Express-ին, որ նույն պապկայի մեջից կարդա html/css ֆայլերը
+app.use(express.static(path.join(__dirname)));
+
+// Երբ ինչ-որ մեկը մտնում է գլխավոր էջ (/), ուղարկում ենք marketplace.html-ը
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'marketplace.html'));
+});
+
 const DB_FILE = process.env.DB_FILE || 'db.json';
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
