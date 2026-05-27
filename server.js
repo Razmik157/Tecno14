@@ -5,6 +5,10 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const jwt = require('jsonwebtoken');
+const cors = require('cors');
+app.use(cors({
+    origin: 'https://technolab-marketplace.onrender.com' // Ձեր frontend-ի հասցեն
+}));
 
 const app = express();
 
