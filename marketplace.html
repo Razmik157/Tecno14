@@ -494,8 +494,15 @@
     // ═══════════════════════════════════════
     // CONFIG — Dynamic API URL
     // ═══════════════════════════════════════
-     host = window.location.hostname || 'localhost';
-    const API_URL = `https://techno-lab-server.onrender.com`;
+     // ═══════════════════════════════════════
+    // CONFIG & STATE
+    // ═══════════════════════════════════════
+    const API_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+        ? 'http://localhost:3000'
+        : 'https://techno-lab-server.onrender.com';
+
+    let products = []; // 👈 API_URL-ից հետո միանգամից պետք է գա այս տողը
+    let cart = [];
     
     // ✅ Escape HTML to prevent XSS attacks
     function escapeHtml(text) {
