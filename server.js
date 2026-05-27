@@ -10,9 +10,9 @@ const jwt = require('jsonwebtoken');
 
 const app = express();
 
-app.use(helmet({
-crossOriginResourcePolicy: { policy: "cross-origin" }
-}));
+//app.use(helmet({
+//crossOriginResourcePolicy: { policy: "cross-origin" }
+//}));
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ limit: '2mb', extended: true }));
@@ -462,6 +462,9 @@ app.use((err, req, res, next) => {
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'marketplace.html'));
 });
+
+app.use(express.static(__dirname));
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log("-----------------------------------------");
@@ -469,3 +472,4 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 http://localhost:${PORT}`);
     console.log("-----------------------------------------");
 });
+
