@@ -50,7 +50,7 @@ const fileFilter = (req, file, cb) => {
 
 const upload = multer({ storage, limits: { fileSize: MAX_FILE_SIZE }, fileFilter });
 
-// ✅ ԼԻՄԻՏՆԵՐԻ ԱՆՋԱՏՈՒՄ՝ RENDER-Ի IPV6 ՍԽԱԼԻՑ ԽՈՒՍԱՓԵԼՈՒ ՀԱՄԱՐ
+// ✅ ԼԻՄԻՏՆԵՐԻ ԱՆՋԱՏՈՒՄ՝ RENDER-Ի IPV6 ՍԽԱԼԻՑ ԽՈՒՍԱՓԵԼՈՒ ՀԱՄԱՐ (require('express-rate-limit')-ն հեռացված է)
 const loginLimiter = (req, res, next) => next();
 const chatLimiter = (req, res, next) => next();
 const strictRateLimiter = (req, res, next) => next();
