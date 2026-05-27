@@ -3,16 +3,12 @@ const express = require('express');
 const fs = require('fs');
 const cors = require('cors');
 const multer = require('multer');
-const rateLimit = require('express-rate-limit');
-const helmet = require('helmet');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 
 const app = express();
 
-//app.use(helmet({
-//crossOriginResourcePolicy: { policy: "cross-origin" }
-//}));
+// Helmet-ը անջատված է, որ Render-ում կոճակները չարգելափակվեն
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ limit: '2mb', extended: true }));
@@ -53,42 +49,14 @@ const fileFilter = (req, file, cb) => {
 };
 
 const upload = multer({ storage, limits: { fileSize: MAX_FILE_SIZE }, fileFilter });
-const uploadFields = upload.fields([
-    { name: 'image', maxCount: 1 },
-    { name: 'attachment', maxCount: 1 }
-]);
 
-const loginLimiter = rateLimit({
-    validate: { xForwardedForHeader: false },
-    windowMs: 15 * 60 * 1000,
-    max: 10,
-    message: { error: "Չափազանց շատ փորձեր։ Փորձեք մի քանի րոպե անց" }
-});
+// ✅ ԼԻՄԻՏՆԵՐԻ ԱՆՋԱՏՈՒՄ՝ RENDER-Ի IPV6 ՍԽԱԼԻՑ ԽՈՒՍԱՓԵԼՈՒ ՀԱՄԱՐ
+const loginLimiter = (req, res, next) => next();
+const chatLimiter = (req, res, next) => next();
+const strictRateLimiter = (req, res, next) => next();
+const adminBruteforceLimiter = (req, res, next) => next();
 
-const chatLimiter = rateLimit({
-    validate: { xForwardedForHeader: false },
-    windowMs: 60 * 1000,
-    max: 25
-});
-
-const strictRateLimiter = rateLimit({
-    validate: { xForwardedForHeader: false },
-    windowMs: 60 * 1000,
-    max: 20,
-    message: { error: "Too many requests. Please slow down." }
-});
-
-// ✅ ADMIN BRUTEFORCE PROTECTION
-const adminBruteforceLimiter = rateLimit({
-    validate: { xForwardedForHeader: false },
-    windowMs: 15 * 60 * 1000,
-    max: 5,
-    message: { error: "Չափազանց շատ սխալ փորձեր։ Փորձեք 15 րոպե անց" },
-    skipSuccessfulRequests: true,
-    keyGenerator: (req) => req.ip || req.connection.remoteAddress
-});
-
-// ✅ Failed attempts tracking
+// Failed attempts tracking
 const failedAttempts = new Map();
 
 function checkAndBlockIP(ip) {
@@ -169,7 +137,7 @@ const adminJWTAuth = (req, res, next) => {
     adminAuth(req, res, next);
 };
 
-// ✅ UPDATED: Admin login with bruteforce protection
+// Admin login
 app.post('/admin/login', adminBruteforceLimiter, (req, res) => {
     const clientIp = req.ip || req.connection.remoteAddress;
     
@@ -476,4 +444,3 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 http://localhost:${PORT}`);
     console.log("-----------------------------------------");
 });
-
