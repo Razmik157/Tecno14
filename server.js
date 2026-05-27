@@ -13,20 +13,7 @@ const app = express();
 app.use(helmet({
 crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
-
-// ✅ ԼՐԱՑՈՒՄ. Քո նախկին app.use(cors());-ը փոխարինվել է սրանով, որպեսզի Vercel-ը չարգելափակվի
-app.use(cors({
-    origin: [
-        'https://tecno14-4cyqy7vg1-techno77.vercel.app', 
-        'https://tecno14.vercel.app',
-        'http://localhost:5173',
-        'http://localhost:3000'
-    ],
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
+app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ limit: '2mb', extended: true }));
 app.use('/uploads', express.static('uploads'));
@@ -51,215 +38,389 @@ const storage = multer.diskStorage({
         cb(null, 'uploads/');
     },
     filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + path.extname(file.originalname));
+        const safeName = Date.now() + '-' + file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+        cb(null, safeName);
     }
 });
 
-const upload = multer({
-    storage: storage,
-    limits: { fileSize: MAX_FILE_SIZE },
-    fileFilter: (req, file, cb) => {
-        const ext = path.extname(file.originalname).toLowerCase();
-        if (!ALLOWED_EXTENSIONS.includes(ext)) {
-            return cb(new Error('Ֆայլի տեսակը չի թույլատրվում'));
-        }
+const fileFilter = (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ALLOWED_EXTENSIONS.includes(ext)) {
         cb(null, true);
+    } else {
+        cb(new Error('Ֆայլի տեսակը չի թույլատրվում'), false);
     }
-});
+};
 
-function initDB() {
-    if (!fs.existsSync(DB_FILE)) {
-        fs.writeFileSync(DB_FILE, JSON.stringify({ users: [], products: [], messages: [] }, null, 4));
-    }
-}
-initDB();
+const upload = multer({ storage, limits: { fileSize: MAX_FILE_SIZE }, fileFilter });
+const uploadFields = upload.fields([
+    { name: 'image', maxCount: 1 },
+    { name: 'attachment', maxCount: 1 }
+]);
 
-function readDB() {
-    try {
-        const data = fs.readFileSync(DB_FILE, 'utf8');
-        return JSON.parse(data);
-    } catch (e) {
-        return { users: [], products: [], messages: [] };
-    }
-}
-
-function writeDB(data) {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 4));
-}
-
-const authLimiter = rateLimit({
+const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
+    max: 10,
+    message: { error: "Չափազանց շատ փորձեր։ Փորձեք մի քանի րոպե անց" }
+});
+
+const chatLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 25
+});
+
+const strictRateLimiter = rateLimit({
+    windowMs: 60 * 1000,
     max: 20,
-    message: { error: "Շատ փորձեր, խնդրում ենք սպասել 15 րոպե" }
+    message: { error: "Too many requests. Please slow down." }
 });
 
-// ─── AUTH ROUTERS ───────────────────────────────────────
-app.post('/api/register', authLimiter, (req, res) => {
-    const { name, email, password } = req.body;
-    if (!name || !email || !password) return res.status(400).json({ error: "Բոլոր դաշտերը պարտադիր են" });
+// ✅ ADMIN BRUTEFORCE PROTECTION
+const adminBruteforceLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    message: { error: "Չափազանց շատ սխալ փորձեր։ Փորձեք 15 րոպե անց" },
+    skipSuccessfulRequests: true,
+    keyGenerator: (req) => req.ip || req.connection.remoteAddress
+});
 
-    const db = readDB();
-    if (db.users.find(u => u.email === email)) {
-        return res.status(400).json({ error: "Այս էլ. հասցեով օգտատեր արդեն կա" });
+// ✅ Failed attempts tracking
+const failedAttempts = new Map();
+
+function checkAndBlockIP(ip) {
+    const now = Date.now();
+    const record = failedAttempts.get(ip);
+    if (record && record.blockUntil && now < record.blockUntil) {
+        const remainingMinutes = Math.ceil((record.blockUntil - now) / 60000);
+        return { blocked: true, remainingMinutes };
     }
-
-    const pin = Math.floor(100000 + Math.random() * 900000).toString();
-    const newUser = { id: Date.now(), name, email, password, pin, role: 'user' };
-    db.users.push(newUser);
-    writeDB(db);
-
-    res.json({ success: true, pin, name });
-});
-
-app.post('/api/login', authLimiter, (req, res) => {
-    const { email, password } = req.body;
-    const db = readDB();
-    const user = db.users.find(u => u.email === email && u.password === password);
-    if (!user) return res.status(400).json({ error: "Սխալ էլ. հասցե կամ գաղտնաբառ" });
-
-    res.json({ success: true, pinRequired: true });
-});
-
-app.post('/api/verify-pin', authLimiter, (req, res) => {
-    const { email, pin } = req.body;
-    const db = readDB();
-    const user = db.users.find(u => u.email === email && u.pin === pin);
-    if (!user) return res.status(400).json({ error: "Սխալ PIN կոդ" });
-
-    const token = jwt.sign({ id: user.id, role: user.role, email: user.email }, JWT_SECRET, { expiresIn: '6h' });
-    res.json({ success: true, token, name: user.name, email: user.email, pin: user.pin, role: user.role });
-});
-
-// ─── MARKETPLACE PRODUCTS ───────────────────────────────
-app.get('/api/products', (req, res) => {
-    const db = readDB();
-    res.json(db.products || []);
-});
-
-// ─── ADMIN ROUTES ───────────────────────────────────────
-function isAdmin(req, res, next) {
-    const authHeader = req.headers['authorization'];
-    if (!authHeader) return res.status(401).json({ error: "Առանց տոկենի մուտքն արգելված է" });
-
-    const token = authHeader.split(' ')[1];
-    if (!token) return res.status(401).json({ error: "Տոկենի ձևաչափը սխալ է" });
-
-    if (token === ADMIN_TOKEN) {
-        req.user = { role: 'admin', name: '👑 Admin' };
-        return next();
+    if (record && record.blockUntil && now >= record.blockUntil) {
+        failedAttempts.delete(ip);
     }
-
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        if (decoded.role === 'admin') {
-            req.user = decoded;
-            return next();
-        }
-        return res.status(403).json({ error: "Մուտքը թույլատրված է միայն ադմիններին" });
-    } catch (e) {
-        return res.status(401).json({ error: "Անվավեր կամ ժամկետանց տոկեն" });
-    }
+    return { blocked: false };
 }
 
-app.post('/api/admin/verify-dash', (req, res) => {
-    const { pin, token } = req.body;
-    if (pin === ADMIN_PIN && token === ADMIN_TOKEN) {
-        return res.json({ success: true, role: 'admin' });
+function recordFailedAttempt(ip) {
+    const now = Date.now();
+    let record = failedAttempts.get(ip);
+    if (!record) {
+        record = { count: 1, lastAttempt: now, blockUntil: null };
+    } else {
+        record.count++;
+        record.lastAttempt = now;
+        if (record.count >= 5 && !record.blockUntil) {
+            record.blockUntil = now + (15 * 60 * 1000);
+        } else if (record.count >= 10 && record.blockUntil === now + (15 * 60 * 1000)) {
+            record.blockUntil = now + (60 * 60 * 1000);
+        } else if (record.count >= 20) {
+            record.blockUntil = now + (24 * 60 * 60 * 1000);
+        }
     }
-    res.status(401).json({ error: "Սխալ Ադմին տվյալներ" });
+    failedAttempts.set(ip, record);
+    return record;
+}
+
+function clearFailedAttempts(ip) {
+    failedAttempts.delete(ip);
+}
+
+// ─── DB ────────────────────────────────────────────────
+const readDB = () => {
+    if (!fs.existsSync(DB_FILE)) {
+        const init = { products: [], orders: [], users: [], messages: [] };
+        fs.writeFileSync(DB_FILE, JSON.stringify(init, null, 2));
+        return init;
+    }
+    const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    if (!data.users)    data.users    = [];
+    if (!data.orders)   data.orders   = [];
+    if (!data.messages) data.messages = [];
+    return data;
+};
+
+const writeDB = (data) => fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+
+// ─── ADMIN AUTH ────────────────────────────────────────
+const adminAuth = (req, res, next) => {
+    const token = req.headers['x-admin-token'];
+    const pin   = req.headers['x-admin-pin'];
+    if (token === ADMIN_TOKEN && pin === ADMIN_PIN) {
+        next();
+    } else {
+        res.status(403).json({ error: "Access Denied" });
+    }
+};
+
+const adminJWTAuth = (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.split(' ')[1];
+        try {
+            const decoded = jwt.verify(token, JWT_SECRET);
+            if (decoded.role === 'admin') {
+                return next();
+            }
+        } catch(e) {}
+    }
+    adminAuth(req, res, next);
+};
+
+// ✅ UPDATED: Admin login with bruteforce protection
+app.post('/admin/login', adminBruteforceLimiter, (req, res) => {
+    const clientIp = req.ip || req.connection.remoteAddress;
+    
+    const { blocked, remainingMinutes } = checkAndBlockIP(clientIp);
+    if (blocked) {
+        return res.status(429).json({ 
+            error: `Արգելափակված եք ${remainingMinutes} րոպեով`,
+            blockedUntil: remainingMinutes
+        });
+    }
+    
+    const { pin } = req.body;
+    if (!pin) {
+        recordFailedAttempt(clientIp);
+        return res.status(400).json({ error: "PIN պարտադիր է" });
+    }
+    
+    if (pin === ADMIN_PIN) {
+        clearFailedAttempts(clientIp);
+        const adminToken = jwt.sign(
+            { role: 'admin', timestamp: Date.now(), ip: clientIp },
+            JWT_SECRET,
+            { expiresIn: '2h' }
+        );
+        res.json({ success: true, token: adminToken });
+    } else {
+        const record = recordFailedAttempt(clientIp);
+        const remainingAttempts = Math.max(0, 5 - record.count);
+        res.status(401).json({ 
+            error: "Invalid admin PIN",
+            remainingAttempts: remainingAttempts,
+            message: remainingAttempts > 0 
+                ? `Մնացել է ${remainingAttempts} փորձ` 
+                : "Պիտի սպասեք 15 րոպե"
+        });
+    }
 });
 
-app.post('/api/admin/products', isAdmin, upload.single('file'), (req, res) => {
-    const { title, description, price, category } = req.body;
-    if (!title || !price || !category || !req.file) {
-        return res.status(400).json({ error: "Լրացրեք դաշտերը և կցեք ֆայլը" });
+// ─── PRODUCTS ──────────────────────────────────────────
+app.get('/products', (req, res) => {
+    const db = readDB();
+    res.json(db.products);
+});
+
+app.post('/products', adminJWTAuth, upload.single('image'), (req, res) => {
+    const { title, desc, cat, price } = req.body;
+    if (!title || !price) return res.status(400).json({ error: "title և price պարտադիր են" });
+
+    let imgUrl = 'https://via.placeholder.com/400';
+    if (req.file) {
+        imgUrl = `/uploads/${req.file.filename}`;
     }
 
     const db = readDB();
-    const newProd = {
+    const newProduct = {
         id: Date.now(),
-        title,
-        description: description || '',
+        title: title.substring(0, 200),
+        desc: (desc || "").substring(0, 1000),
+        cat: cat || "General",
         price: parseFloat(price),
-        category,
-        fileUrl: `/uploads/${req.file.filename}`,
-        fileName: req.file.originalname,
-        fileSize: (req.file.size / (1024 * 1024)).toFixed(2) + ' MB',
-        date: new Date().toLocaleDateString()
+        img: imgUrl
     };
-
-    db.products.push(newProd);
+    db.products.push(newProduct);
     writeDB(db);
-    res.json({ success: true, product: newProd });
+    res.json(newProduct);
 });
 
-app.delete('/api/admin/products/:id', isAdmin, (req, res) => {
-    const id = parseInt(req.params.id);
+app.delete('/products/:id', adminJWTAuth, (req, res) => {
     const db = readDB();
-    const prodIndex = db.products.findIndex(p => p.id === id);
-    if (prodIndex === -1) return res.status(404).json({ error: "Ապրանքը չի գտնվել" });
-
-    const prod = db.products[prodIndex];
-    if (prod.fileUrl) {
-        const fullPath = path.join(__dirname, prod.fileUrl);
-        if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+    const product = db.products.find(p => p.id == req.params.id);
+    if (product && product.img && product.img.startsWith('/uploads/')) {
+        const filePath = path.join(__dirname, product.img);
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     }
-
-    db.products.splice(prodIndex, 1);
+    db.products = db.products.filter(p => p.id != req.params.id);
     writeDB(db);
     res.json({ success: true });
 });
 
-// ─── CHAT SYSTEM ────────────────────────────────────────
-app.get('/api/admin/messages', isAdmin, (req, res) => {
+// ─── CLIENT AUTH ───────────────────────────────────────
+app.post('/register-client', loginLimiter, (req, res) => {
+    const { name, email } = req.body;
+    if (!name || !email) return res.status(400).json({ success: false, message: "Անուն և email պարտադիր են" });
+    const cleanEmail = email.toLowerCase().trim();
     const db = readDB();
-    res.json(db.messages || []);
+
+    if (db.users.find(u => u.email === cleanEmail)) {
+        return res.status(400).json({ success: false, message: "Այս էլ. փոստը արդեն գրանցված է" });
+    }
+
+    const newPin = Math.floor(1000 + Math.random() * 9000).toString();
+    const user = { id: Date.now(), name: name.substring(0, 60), email: cleanEmail, pin: newPin, regDate: new Date().toLocaleString() };
+    db.users.push(user);
+    writeDB(db);
+    res.json({ success: true, pin: newPin });
 });
 
-app.get('/api/user/messages', (req, res) => {
-    const email = req.query.email;
-    if (!email) return res.status(400).json({ error: "Email-ը պարտադիր է" });
+app.post('/login-client', loginLimiter, (req, res) => {
+    const { email, pin } = req.body;
+    if (!email || !pin) return res.status(400).json({ success: false, message: "email և pin պարտադիր են" });
     const db = readDB();
-    const userMsgs = db.messages.filter(m => m.email === email);
-    res.json(userMsgs);
+    const user = db.users.find(u => u.email === email.toLowerCase().trim() && u.pin === pin);
+    if (user) {
+        res.json({ success: true, name: user.name });
+    } else {
+        res.status(401).json({ success: false, message: "Սխալ էլ. փոստ կամ PIN" });
+    }
 });
 
-app.post('/api/user/messages', upload.single('file'), (req, res) => {
-    const { email, message } = req.body;
-    if (!email) return res.status(400).json({ error: "Email-ը պարտադիր է" });
+app.post('/login-client-jwt', loginLimiter, (req, res) => {
+    const { email, pin } = req.body;
+    if (!email || !pin) return res.status(400).json({ success: false, message: "email և pin պարտադիր են" });
+    const db = readDB();
+    const user = db.users.find(u => u.email === email.toLowerCase().trim() && u.pin === pin);
+    if (user) {
+        const token = jwt.sign(
+            { id: user.id, email: user.email, name: user.name },
+            JWT_SECRET,
+            { expiresIn: '7d' }
+        );
+        res.json({ success: true, name: user.name, token });
+    } else {
+        res.status(401).json({ success: false, message: "Սխալ էլ. փոստ կամ PIN" });
+    }
+});
+
+app.get('/my-orders/:email', (req, res) => {
+    const db = readDB();
+    const email = req.params.email.toLowerCase().trim();
+    const pin = req.query.pin;
+    if (!pin) return res.status(400).json({ error: "PIN պարտադիր է" });
+    const user = db.users.find(u => u.email === email && u.pin === pin);
+    if (!user) return res.status(401).json({ error: "Access Denied" });
+    const userOrders = db.orders.filter(o => o.email.toLowerCase().trim() === email);
+    res.json(userOrders);
+});
+
+app.post('/orders', strictRateLimiter, (req, res) => {
+    const { customer, email, pin, items, total } = req.body;
+    if (!email || !pin) return res.status(400).json({ error: "email և pin պարտադիր են" });
 
     const db = readDB();
-    const user = db.users.find(u => u.email === email);
-    if (!user) return res.status(404).json({ error: "Օգտատերը գրանցված չէ" });
+
+    const user = db.users.find(u => u.email === email.toLowerCase().trim() && u.pin === pin);
+    if (!user) return res.status(401).json({ error: "Սխալ email կամ PIN" });
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ error: "Ապրանք չկա" });
+    }
+
+    const newOrder = {
+        id: Date.now(),
+        customer: (customer || user.name).substring(0, 100),
+        email: email.toLowerCase().trim(),
+        items,
+        total: parseFloat(total) || 0,
+        modelUrl: req.body.modelUrl || null,
+        date: new Date().toLocaleString(),
+        status: 'Ընդունված'
+    };
+    db.orders.push(newOrder);
+    writeDB(db);
+    res.json({ success: true });
+});
+
+// ─── MESSAGES ──────────────────────────────────────────
+app.post('/messages', chatLimiter, upload.single('attachment'), (req, res) => {
+    const db = readDB();
+    const email = req.body.email ? req.body.email.toLowerCase().trim() : null;
+    const pin   = req.body.pin || null;
+
+    if (!email || !pin) return res.status(400).json({ error: "email և pin պարտադիր են" });
+
+    const user = db.users.find(u => u.email === email && u.pin === pin);
+    if (!user) return res.status(401).json({ error: "Սխալ PIN" });
 
     let attachment = null;
     if (req.file) {
         attachment = { name: req.file.originalname, url: `/uploads/${req.file.filename}` };
     }
 
-    if (!message.trim() && !attachment) return res.status(400).json({ error: "Հաղորդագրություն կամ ֆայլ պարտադիր է" });
+    const msg = req.body.message || "";
+    if (!msg.trim() && !attachment) return res.status(400).json({ error: "Հաղորդագրություն կամ ֆայլ պարտադիր է" });
 
-    const newMsg = {
+    const newMessage = {
         id: Date.now(),
         name: user.name,
         email,
-        pin: user.pin,
-        message: message.substring(0, 2000),
-        sender: 'user',
+        pin,
+        message: msg.substring(0, 2000),
+        sender: 'client',
         attachment,
         date: new Date().toLocaleString()
     };
-    db.messages.push(newMsg);
+    db.messages.push(newMessage);
     writeDB(db);
     res.json({ success: true });
 });
 
-app.post('/api/admin/messages', isAdmin, upload.single('file'), (req, res) => {
-    const { email, message } = req.body;
-    if (!email) return res.status(400).json({ error: "Օգտատիրոջ Email-ը պարտադիր է" });
+app.get('/my-messages/:email', (req, res) => {
+    const db = readDB();
+    const clientEmail = req.params.email.toLowerCase().trim();
+    const clientPin   = req.query.pin;
+    if (!clientPin) return res.status(400).json({ error: "PIN պարտադիր է" });
+
+    const user = db.users.find(u => u.email === clientEmail && u.pin === clientPin);
+    if (!user) return res.status(401).json({ error: "Սխալ PIN" });
+
+    const userMsgs = db.messages.filter(m => m.email === clientEmail && m.pin === clientPin);
+    res.json(userMsgs);
+});
+
+// ─── ADMIN ENDPOINTS ───────────────────────────────────
+app.get('/admin/orders', adminJWTAuth, (req, res) => {
+    res.json(readDB().orders);
+});
+
+app.post('/admin/update-order-status', adminJWTAuth, (req, res) => {
+    const { orderId, newStatus } = req.body;
+    const VALID_STATUSES = ['Ընդունված', 'Պատրաստվում է', 'Ավարտված'];
+    if (!VALID_STATUSES.includes(newStatus)) return res.status(400).json({ error: "Անվավեր status" });
 
     const db = readDB();
+    const idx = db.orders.findIndex(o => o.id == orderId);
+    if (idx === -1) return res.status(404).json({ error: "Order not found" });
+
+    db.orders[idx].status = newStatus;
+    writeDB(db);
+    res.json({ success: true });
+});
+
+app.get('/admin/messages', adminJWTAuth, (req, res) => {
+    const db = readDB();
+    const grouped = {};
+    (db.messages || []).forEach(m => {
+        if (!grouped[m.email]) {
+            grouped[m.email] = { email: m.email, name: m.name, messages: [] };
+        }
+        grouped[m.email].messages.push(m);
+    });
+    res.json(Object.values(grouped));
+});
+
+app.get('/admin/users', adminJWTAuth, (req, res) => {
+    const db = readDB();
+    res.json(db.users.map(({ pin, ...u }) => u));
+});
+
+app.post('/admin/send-message', adminJWTAuth, chatLimiter, upload.single('attachment'), (req, res) => {
+    const db = readDB();
+    const email   = req.body.email ? req.body.email.toLowerCase().trim() : null;
+    const message = req.body.message || req.body.text || "";
+
+    if (!email) return res.status(400).json({ error: "email պարտադիր է" });
+
     const user = db.users.find(u => u.email === email);
     if (!user) return res.status(404).json({ error: "User not found" });
 
@@ -294,8 +455,14 @@ app.use((err, req, res, next) => {
         return res.status(415).json({ error: err.message });
     }
     console.error(err);
-    res.status(500).json({ error: "Ներքին սերվերի սխալ" });
+    res.status(500).json({ error: "Server error" });
 });
 
+// ─── START ─────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Սերվերը ակտիվ է ${PORT} պորտում`));
+app.listen(PORT, '0.0.0.0', () => {
+    console.log("-----------------------------------------");
+    console.log("🚀 Techno Lab Server is running!");
+    console.log(`🌐 http://localhost:${PORT}`);
+    console.log("-----------------------------------------");
+});
