@@ -59,17 +59,20 @@ const uploadFields = upload.fields([
 ]);
 
 const loginLimiter = rateLimit({
+    validate: { xForwardedForHeader: false }
     windowMs: 15 * 60 * 1000,
     max: 10,
     message: { error: "Չափազանց շատ փորձեր։ Փորձեք մի քանի րոպե անց" }
 });
 
 const chatLimiter = rateLimit({
+    validate: { xForwardedForHeader: false }
     windowMs: 60 * 1000,
     max: 25
 });
 
 const strictRateLimiter = rateLimit({
+    validate: { xForwardedForHeader: false }
     windowMs: 60 * 1000,
     max: 20,
     message: { error: "Too many requests. Please slow down." }
@@ -77,6 +80,7 @@ const strictRateLimiter = rateLimit({
 
 // ✅ ADMIN BRUTEFORCE PROTECTION
 const adminBruteforceLimiter = rateLimit({
+    validate: { xForwardedForHeader: false }
     windowMs: 15 * 60 * 1000,
     max: 5,
     message: { error: "Չափազանց շատ սխալ փորձեր։ Փորձեք 15 րոպե անց" },
