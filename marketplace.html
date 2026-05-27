@@ -534,7 +534,7 @@
         return fetch(url, options);
     }
 
-    let products = [];
+    products = await response.json();
     let cart = [];
     let currentCategory = 'All';
     let currentAuthMode = 'login';
